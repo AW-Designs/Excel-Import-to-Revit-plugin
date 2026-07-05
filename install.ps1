@@ -54,7 +54,10 @@ foreach ($year in $years) {
     New-Item -ItemType Directory -Force $dest | Out-Null
     New-Item -ItemType Directory -Force $pluginDir | Out-Null
 
-    $tmp = Join-Path $env:TEMP "$asset"
+    # Download into the target folder (a long path) and use -LiteralPath so a
+    # short-name temp path like C:\Users\LORENC~1.RAC (the '~' is treated as a
+    # wildcard/home token by PowerShell) can't break the file operations.
+    $tmp = Join-Path $dest "$asset"
     try {
         Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
     } catch {
@@ -63,10 +66,13 @@ foreach ($year in $years) {
     }
 
     # Clear old payload, extract new one, write the manifest.
-    Get-ChildItem $pluginDir -Recurse -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Expand-Archive -Path $tmp -DestinationPath $pluginDir -Force
-    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    Set-Content -Path (Join-Path $dest 'ExcelScheduleImporter.addin') -Value $manifest -Encoding UTF8
+    if (Test-Path -LiteralPath $pluginDir) {
+        Get-ChildItem -LiteralPath $pluginDir -Recurse -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Expand-Archive -LiteralPath $tmp -DestinationPath $pluginDir -Force
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath (Join-Path $dest 'ExcelScheduleImporter.addin') -Value $manifest -Encoding UTF8
 
     Write-Host "  Installed to $pluginDir" -ForegroundColor Green
 }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Excel Schedule Importer</Name>
+    <Assembly>ExcelScheduleImporter\ExcelScheduleImporter.dll</Assembly>
+    <FullClassName>ExcelScheduleImporter.App</FullClassName>
+    <ClientId>7c1f3c1e-9a44-4d6b-b1a2-3e5f0d8c2a91</ClientId>
+    <VendorId>LRCI</VendorId>
+    <VendorDescription>Excel Schedule Importer - open source in-house tool</VendorDescription>
+  </AddIn>
+</RevitAddIns>

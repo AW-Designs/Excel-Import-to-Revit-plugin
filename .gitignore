@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+dist/
+
+# User / IDE
+.vs/
+*.user
+*.suo
+
+# Local signing artifacts
+*.pfx
+*.snk

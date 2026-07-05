@@ -1,0 +1,67 @@
+name: Build and Release
+
+# Push a version tag to trigger a release, e.g.:
+#   git tag v1.0.1
+#   git push origin v1.0.1
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Derive version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package all Revit versions
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $proj = "src/ExcelScheduleImporter/ExcelScheduleImporter.csproj"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($year in '24','25','26') {
+            $cfg = "Release R$year"
+            # Stamp the assembly version to the tag so the in-app updater compares correctly.
+            dotnet build $proj -c $cfg -p:DeployAddin=false -p:Version=$ver
+            if ($LASTEXITCODE -ne 0) { throw "Build failed for $cfg" }
+            $bin = "src/ExcelScheduleImporter/bin/$cfg"
+            # Zip the payload (the contents that live in the add-in subfolder).
+            $zip = "dist/ExcelScheduleImporter-R$year.zip"
+            Get-ChildItem $bin -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
+            Compress-Archive -Path "$bin/*" -DestinationPath $zip -Force
+          }
+          # Include the .addin manifest and installer for first-time setup.
+          Copy-Item addin/ExcelScheduleImporter.addin dist/
+          Copy-Item install.ps1 dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.ver.outputs.version }}
+          files: |
+            dist/ExcelScheduleImporter-R24.zip
+            dist/ExcelScheduleImporter-R25.zip
+            dist/ExcelScheduleImporter-R26.zip
+            dist/ExcelScheduleImporter.addin
+            dist/install.ps1
+          body: |
+            Excel Schedule Importer v${{ steps.ver.outputs.version }}
+
+            Installed copies auto-update to this version on next Revit launch.
+            First-time install: see install.ps1 (or DEPLOYMENT.md in the repo).

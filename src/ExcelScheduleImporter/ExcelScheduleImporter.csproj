@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Multi-version Revit add-in.
+    Build with:  dotnet build -c "Release R24"   (Revit 2024, .NET Framework 4.8)
+                 dotnet build -c "Release R25"   (Revit 2025, .NET 8)
+                 dotnet build -c "Release R26"   (Revit 2026, .NET 8)
+    Each build auto-deploys to %AppData%\Autodesk\Revit\Addins\<year>\
+  -->
+
+  <PropertyGroup>
+    <Configurations>Debug R24;Debug R25;Debug R26;Release R24;Release R25;Release R26</Configurations>
+    <Configuration Condition="'$(Configuration)' == ''">Release R26</Configuration>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>ExcelScheduleImporter</AssemblyName>
+    <RootNamespace>ExcelScheduleImporter</RootNamespace>
+    <!-- Copy all NuGet dependencies (ClosedXML etc.) next to the DLL -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>1.0.0</Version>
+    <DeployAddin Condition="'$(DeployAddin)' == ''">true</DeployAddin>
+  </PropertyGroup>
+
+  <!-- Revit 2024 : .NET Framework 4.8 -->
+  <PropertyGroup Condition="$(Configuration.Contains('R24'))">
+    <RevitVersion>2024</RevitVersion>
+    <TargetFramework>net48</TargetFramework>
+    <DefineConstants>$(DefineConstants);R24</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Revit 2025 : .NET 8 -->
+  <PropertyGroup Condition="$(Configuration.Contains('R25'))">
+    <RevitVersion>2025</RevitVersion>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <DefineConstants>$(DefineConstants);R25</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Revit 2026 : .NET 8 -->
+  <PropertyGroup Condition="$(Configuration.Contains('R26'))">
+    <RevitVersion>2026</RevitVersion>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <DefineConstants>$(DefineConstants);R26</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ribbon / dialog icons embedded into the DLL -->
+    <EmbeddedResource Include="Resources\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Official Revit API assemblies re-published as NuGet packages (compile-time only) -->
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitVersion).*" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="$(RevitVersion).*" />
+    <!-- Excel reader: no Excel installation required, reads xlsx/xlsm incl. formatting -->
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+  </ItemGroup>
+
+  <!-- Reference assemblies so net48 builds without Visual Studio installed -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <!-- Framework assemblies the updater needs on .NET Framework (built in on .NET 8) -->
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <!--
+    Code-sign the DLL right after compiling (before deployment) so Revit's
+    "unsigned add-in" prompt shows a real publisher instead of "Unknown
+    Publisher". Requires setup-signing.ps1 to have been run once on this
+    machine; harmlessly no-ops (unsigned DLL, same as before) if not.
+    Trust is tied to the certificate, not the file hash, so "Always Load"
+    in Revit sticks across future rebuilds once you've trusted it.
+  -->
+  <Target Name="SignAssembly" AfterTargets="Build" Condition="'$(RevitVersion)' != ''">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\sign.ps1&quot; -Path &quot;$(TargetPath)&quot;"
+          ContinueOnError="true" />
+  </Target>
+
+  <!-- Auto-deploy to the Revit Addins folder after every successful build -->
+  <Target Name="DeployAddin" AfterTargets="Build;SignAssembly" Condition="'$(DeployAddin)' == 'true' AND '$(RevitVersion)' != ''">
+    <PropertyGroup>
+      <AddinRoot>$(APPDATA)\Autodesk\Revit\Addins\$(RevitVersion)\</AddinRoot>
+    </PropertyGroup>
+    <ItemGroup>
+      <!-- PDB included: exact line numbers in any crash log / stack trace -->
+      <OutputFiles Include="$(TargetDir)**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(OutputFiles)" DestinationFolder="$(AddinRoot)ExcelScheduleImporter\%(RecursiveDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\addin\ExcelScheduleImporter.addin" DestinationFolder="$(AddinRoot)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Deployed to $(AddinRoot)ExcelScheduleImporter" />
+  </Target>
+
+</Project>

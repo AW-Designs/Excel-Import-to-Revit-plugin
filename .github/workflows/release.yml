@@ -46,9 +46,10 @@ jobs:
             Get-ChildItem $bin -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
             Compress-Archive -Path "$bin/*" -DestinationPath $zip -Force
           }
-          # Include the .addin manifest and installer for first-time setup.
+          # Include the .addin manifest and installers for first-time setup.
           Copy-Item addin/ExcelScheduleImporter.addin dist/
           Copy-Item install.ps1 dist/
+          Copy-Item "Install-ExcelScheduleImporter.bat" dist/
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -60,8 +61,12 @@ jobs:
             dist/ExcelScheduleImporter-R26.zip
             dist/ExcelScheduleImporter.addin
             dist/install.ps1
+            dist/Install-ExcelScheduleImporter.bat
           body: |
             Excel Schedule Importer v${{ steps.ver.outputs.version }}
 
             Installed copies auto-update to this version on next Revit launch.
-            First-time install: see install.ps1 (or DEPLOYMENT.md in the repo).
+
+            **First-time install:** download `Install-ExcelScheduleImporter.bat`
+            below and double-click it (no PowerShell typing needed). See
+            DEPLOYMENT.md in the repo for details.

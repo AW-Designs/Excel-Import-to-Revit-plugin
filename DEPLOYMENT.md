@@ -44,15 +44,19 @@ Everyone on an installed copy gets it within one Revit restart (after the next
 
 ## First-time install (each colleague, once)
 
-Run in PowerShell (no admin needed):
+Easiest path — no admin rights, nothing to type: download
+[Install-ExcelScheduleImporter.bat](https://github.com/AW-Designs/Excel-Import-to-Revit-plugin/releases/latest/download/Install-ExcelScheduleImporter.bat)
+(attached to every release) and double-click it.
+
+Or, in PowerShell directly (this is what the `.bat` runs under the hood):
 
 ```powershell
 irm https://github.com/AW-Designs/Excel-Import-to-Revit-plugin/releases/latest/download/install.ps1 -OutFile "$env:TEMP\esi-install.ps1"; & "$env:TEMP\esi-install.ps1"
 ```
 
-It detects installed Revit versions, downloads the matching add-in, and registers
-it under the user profile. On first launch, Revit may warn about an unsigned
-add-in — click **Always Load** once.
+Either way it detects installed Revit versions, downloads the matching add-in,
+and registers it under the user profile. On first launch, Revit may warn about
+an unsigned add-in — click **Always Load** once.
 
 ## Local build (development)
 

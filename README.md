@@ -6,6 +6,29 @@ zoom and print scale, no raster images bloating the model.
 
 Compatible with **Revit 2024, 2025 and 2026**.
 
+## Installation
+
+For colleagues installing this on their own PC — no admin rights needed, nothing
+to build. Open **PowerShell** and run:
+
+```powershell
+irm https://github.com/AW-Designs/Excel-Import-to-Revit-plugin/releases/latest/download/install.ps1 -OutFile "$env:TEMP\esi-install.ps1"; & "$env:TEMP\esi-install.ps1"
+```
+
+This detects which Revit versions (2024/2025/2026) you have installed,
+downloads the matching add-in from the latest release, and registers it under
+your user profile.
+
+Then start Revit — the **Import Excel Schedule** button is on the **Add-Ins**
+tab. The first time, Revit may warn about an unsigned add-in — click
+**Always Load**.
+
+**That's it — you only run this once.** The add-in checks for updates in the
+background each time Revit launches and installs new versions automatically
+(the swap happens after Revit closes, so it never interrupts your session).
+See [DEPLOYMENT.md](DEPLOYMENT.md) for how updates are published and how the
+auto-update mechanism works.
+
 ## What it does
 
 1. Pick an `.xlsx` / `.xlsm` file (Excel does not need to be installed).

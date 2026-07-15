@@ -28,6 +28,18 @@ namespace ExcelScheduleImporter.Revit
     }
 
     /// <summary>
+    /// Structured result for an in-dialog update. The external command needs to
+    /// know whether model changes were committed so closing the manager cannot
+    /// accidentally return Result.Cancelled and make Revit undo them.
+    /// </summary>
+    public sealed class ScheduleUpdateResult
+    {
+        public int UpdatedCount { get; set; }
+        public bool TransactionCommitted { get; set; }
+        public string Summary { get; set; }
+    }
+
+    /// <summary>
     /// Queries and updates Excel-linked drafting views. Shared by the import
     /// dialog's status panel (its Update buttons call straight into here).
     /// </summary>
@@ -81,7 +93,7 @@ namespace ExcelScheduleImporter.Revit
         /// are untouched. Returns a one-line summary; failure details on
         /// subsequent lines.
         /// </summary>
-        public static string UpdateViews(Document doc, ICollection<ElementId> ids)
+        public static ScheduleUpdateResult UpdateViews(Document doc, ICollection<ElementId> ids)
         {
             int updated = 0;
             var failures = new List<string>();
@@ -141,7 +153,12 @@ namespace ExcelScheduleImporter.Revit
               catch (Exception ex)
               {
                 if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack();
-                return "Update failed and was rolled back: " + ex.Message;
+                return new ScheduleUpdateResult
+                {
+                    UpdatedCount = 0,
+                    TransactionCommitted = false,
+                    Summary = "Update failed and was rolled back: " + ex.Message,
+                };
               }
             }
 
@@ -152,7 +169,12 @@ namespace ExcelScheduleImporter.Revit
                 sb.AppendFormat("  {0} failed:", failures.Count);
                 foreach (var f in failures) sb.Append("\n  -  ").Append(f);
             }
-            return sb.ToString();
+            return new ScheduleUpdateResult
+            {
+                UpdatedCount = updated,
+                TransactionCommitted = true,
+                Summary = sb.ToString(),
+            };
         }
 
         /// <summary>

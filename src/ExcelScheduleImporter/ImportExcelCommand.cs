@@ -29,6 +29,7 @@ namespace ExcelScheduleImporter
                 return Result.Failed;
             }
             Document doc = uidoc.Document;
+            bool hasCommittedUpdates = false;
 
             try
             {
@@ -55,8 +56,10 @@ namespace ExcelScheduleImporter
                     ids => ScheduleUpdater.UpdateViews(doc, ids),
                     () => ScheduleUpdater.GatherRows(doc)))
                 {
-                    if (form.ShowDialog() != DialogResult.OK)
-                        return Result.Cancelled;   // updates done in-dialog are already committed
+                    DialogResult dialogResult = form.ShowDialog();
+                    hasCommittedUpdates = form.HasCommittedUpdates;
+                    if (dialogResult != DialogResult.OK)
+                        return CancelUnlessChangesCommitted(hasCommittedUpdates);
                     options = form.Options;
                     table = form.Reader.ReadSheet(options.SheetName, options.RangeOverride);
                 }
@@ -65,7 +68,7 @@ namespace ExcelScheduleImporter
                 {
                     TaskDialog.Show("Excel Schedule Importer",
                         "The selected range contains no visible content.");
-                    return Result.Cancelled;
+                    return CancelUnlessChangesCommitted(hasCommittedUpdates);
                 }
 
                 // Sanity warning for very large ranges
@@ -83,7 +86,7 @@ namespace ExcelScheduleImporter
                         DefaultButton = TaskDialogResult.No,
                     };
                     if (td.Show() != TaskDialogResult.Yes)
-                        return Result.Cancelled;
+                        return CancelUnlessChangesCommitted(hasCommittedUpdates);
                 }
 
                 // 3. If replacing, locate the old view now. It cannot simply be
@@ -154,7 +157,7 @@ namespace ExcelScheduleImporter
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
-                return Result.Cancelled;
+                return CancelUnlessChangesCommitted(hasCommittedUpdates);
             }
             catch (Exception ex)
             {
@@ -170,8 +173,14 @@ namespace ExcelScheduleImporter
                     CommonButtons = TaskDialogCommonButtons.Close,
                 };
                 td.Show();
-                return Result.Failed;
+                // A prior in-dialog schedule update is already committed. Returning
+                // Failed here would make Revit reverse that valid update along with
+                // the unsuccessful import attempt.
+                return hasCommittedUpdates ? Result.Succeeded : Result.Failed;
             }
         }
+
+        private static Result CancelUnlessChangesCommitted(bool hasCommittedUpdates)
+            => hasCommittedUpdates ? Result.Succeeded : Result.Cancelled;
     }
 }

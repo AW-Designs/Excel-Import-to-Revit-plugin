@@ -53,10 +53,18 @@ namespace ExcelScheduleImporter.UI
         private readonly HashSet<string> _existingViewNames;
         private string _detectedRange;   // last auto-detected range for the selected sheet
 
-        private readonly Func<List<ElementId>, string> _updateAction;
+        private readonly Func<List<ElementId>, ScheduleUpdateResult> _updateAction;
         private readonly Func<List<ManageRow>> _refreshRows;
 
         public ImportOptions Options { get; private set; }
+
+        /// <summary>
+        /// True once at least one linked drafting view has been successfully
+        /// rebuilt and committed while this dialog is open. The external command
+        /// uses this to preserve those changes when the user closes the manager
+        /// without starting a new import.
+        /// </summary>
+        public bool HasCommittedUpdates { get; private set; }
 
         /// <summary>
         /// The workbook, parsed once when the user picks a file. The command reuses
@@ -66,7 +74,7 @@ namespace ExcelScheduleImporter.UI
 
         public ImportForm(IEnumerable<string> existingDraftingViewNames,
                           List<ManageRow> scheduleRows,
-                          Func<List<ElementId>, string> updateAction,
+                          Func<List<ElementId>, ScheduleUpdateResult> updateAction,
                           Func<List<ManageRow>> refreshRows)
         {
             _existingViewNames = new HashSet<string>(
@@ -413,7 +421,14 @@ namespace ExcelScheduleImporter.UI
                 Cursor = Cursors.WaitCursor;
                 _btnUpdateChecked.Enabled = _btnUpdateAll.Enabled = false;
 
-                string summary = _updateAction(ids);
+                ScheduleUpdateResult updateResult = _updateAction(ids);
+                if (updateResult == null)
+                    throw new InvalidOperationException("The schedule updater returned no result.");
+
+                if (updateResult.TransactionCommitted && updateResult.UpdatedCount > 0)
+                    HasCommittedUpdates = true;
+
+                string summary = updateResult.Summary ?? "Update completed.";
 
                 PopulateSchedules(_refreshRows());
 

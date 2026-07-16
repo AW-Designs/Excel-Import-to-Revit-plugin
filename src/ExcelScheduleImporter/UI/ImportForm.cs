@@ -45,6 +45,8 @@ namespace ExcelScheduleImporter.UI
         // ── status panel controls ────────────────────────────────────────────
         private TextBox _txtSearch;
         private FlowLayoutPanel _flow;
+        private Button _btnSelectAll;
+        private Button _btnDeselectAll;
         private Button _btnUpdateChecked;
         private Button _btnUpdateAll;
         private Label _lblUpdateStatus;
@@ -240,6 +242,22 @@ namespace ExcelScheduleImporter.UI
                 Text = "Imported schedules",
                 Font = new Font("Segoe UI Semibold", 10f),
             });
+            _btnSelectAll = new Button
+            {
+                Left = rx + rw - 178, Top = 60, Width = 80, Height = 26,
+                Text = "Select all",
+            };
+            _btnDeselectAll = new Button
+            {
+                Left = rx + rw - 92, Top = 60, Width = 92, Height = 26,
+                Text = "Deselect all",
+            };
+            _btnSelectAll.Click += (s2, e2) => SetVisibleCardsChecked(true);
+            _btnDeselectAll.Click += (s2, e2) => SetVisibleCardsChecked(false);
+            _tip.SetToolTip(_btnSelectAll, "Select every schedule currently shown by the search filter.");
+            _tip.SetToolTip(_btnDeselectAll, "Deselect every schedule currently shown by the search filter.");
+            Controls.Add(_btnSelectAll);
+            Controls.Add(_btnDeselectAll);
             Controls.Add(new Panel { Left = rx + 1, Top = 85, Width = 32, Height = 3, BackColor = Theme.Accent });
 
             _txtSearch = new TextBox { Left = rx, Top = 100, Width = rw };
@@ -328,6 +346,8 @@ namespace ExcelScheduleImporter.UI
 
             _btnUpdateChecked.Enabled = any;
             _btnUpdateAll.Enabled = any;
+            _btnSelectAll.Enabled = any;
+            _btnDeselectAll.Enabled = any;
 
             _flow.ResumeLayout();
             ApplyFilter();
@@ -394,8 +414,26 @@ namespace ExcelScheduleImporter.UI
         private void ApplyFilter()
         {
             string q = (_txtSearch.Text ?? "").Trim();
+            bool anyVisible = false;
             foreach (var card in _flow.Controls.OfType<ScheduleCard>())
-                card.Visible = q.Length == 0 || card.Matches(q);
+            {
+                bool matches = q.Length == 0 || card.Matches(q);
+                card.Visible = matches;
+                anyVisible |= matches;
+            }
+
+            _btnSelectAll.Enabled = anyVisible;
+            _btnDeselectAll.Enabled = anyVisible;
+        }
+
+        /// <summary>
+        /// Select or deselect the schedules currently shown by the search filter.
+        /// Hidden cards keep their selection, making filtered batch updates useful.
+        /// </summary>
+        private void SetVisibleCardsChecked(bool isChecked)
+        {
+            foreach (var card in _flow.Controls.OfType<ScheduleCard>().Where(c => c.Visible))
+                card.CardChecked = isChecked;
         }
 
         private void OnUpdate(bool onlyChecked)
@@ -478,7 +516,11 @@ namespace ExcelScheduleImporter.UI
             private readonly Color _statusColor;
             private Color _fill;
 
-            public bool CardChecked => _chk.Checked;
+            public bool CardChecked
+            {
+                get => _chk.Checked;
+                set => _chk.Checked = value;
+            }
 
             public ScheduleCard(ManageRow row, int width, ToolTip tip)
             {

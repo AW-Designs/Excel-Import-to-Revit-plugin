@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -60,6 +62,19 @@ namespace ExcelScheduleImporter
                     hasCommittedUpdates = form.HasCommittedUpdates;
                     if (dialogResult != DialogResult.OK)
                         return CancelUnlessChangesCommitted(hasCommittedUpdates);
+
+                    // Multi-sheet import: everything happens here, while the form
+                    // (and therefore its already-parsed workbook) is still alive.
+                    if (form.BatchOptions != null && form.BatchOptions.Count > 0)
+                    {
+                        Result batchResult = ImportBatch(uidoc, doc, form, form.BatchOptions);
+                        // A failed batch must not reverse schedule updates the user
+                        // already committed in the dialog (Revit undoes the whole
+                        // command on Failed/Cancelled).
+                        return batchResult == Result.Failed && hasCommittedUpdates
+                            ? Result.Succeeded : batchResult;
+                    }
+
                     options = form.Options;
                     table = form.Reader.ReadSheet(options.SheetName, options.RangeOverride);
                 }
@@ -178,6 +193,113 @@ namespace ExcelScheduleImporter
                 // the unsuccessful import attempt.
                 return hasCommittedUpdates ? Result.Succeeded : Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// Import several worksheets in ONE transaction. Committing once rather
+        /// than per sheet is what makes a batch meaningfully faster than repeating
+        /// the dialog: Revit's per-transaction overhead is paid a single time.
+        /// A failure on one sheet is recorded and the rest still import.
+        /// </summary>
+        private static Result ImportBatch(UIDocument uidoc, Document doc,
+                                          ImportForm form, List<ImportOptions> plan)
+        {
+            var replacedIds = new List<ElementId>();
+            var built = new List<View>();
+            var failures = new List<string>();
+
+            using (var tx = new Transaction(doc, "Import Excel Schedules"))
+            {
+                tx.Start();
+
+                foreach (var options in plan)
+                {
+                    try
+                    {
+                        // Free the name first: the old view cannot be deleted yet
+                        // (it may be active), so rename it aside and delete later.
+                        if (options.ReplaceExisting)
+                        {
+                            var oldView = new FilteredElementCollector(doc)
+                                .OfClass(typeof(ViewDrafting))
+                                .Cast<ViewDrafting>()
+                                .FirstOrDefault(v => !v.IsTemplate && v.Name == options.ViewName);
+
+                            if (oldView != null)
+                            {
+                                oldView.Name = DraftingViewBuilder.SanitizeViewName(options.ViewName)
+                                    + " (replacing " + Guid.NewGuid().ToString("N").Substring(0, 6) + ")";
+                                replacedIds.Add(oldView.Id);
+                            }
+                        }
+
+                        var table = form.Reader.ReadSheet(options.SheetName, options.RangeOverride);
+                        if (table.Cells.Count == 0)
+                        {
+                            failures.Add(options.SheetName + ":  no visible content");
+                            continue;
+                        }
+
+                        var result = new DraftingViewBuilder(doc).Build(table, options);
+                        ScheduleMetadata.Save(result.View, options);
+                        built.Add(result.View);
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add(options.SheetName + ":  " + ex.Message);
+                    }
+                }
+
+                if (built.Count == 0)
+                {
+                    tx.RollBack();
+                    TaskDialog.Show("Excel Schedule Importer",
+                        "Nothing was imported.\n\n" + string.Join("\n", failures));
+                    return Result.Failed;
+                }
+
+                tx.Commit();
+            }
+
+            // Land on the first new view - immediate visual confirmation.
+            uidoc.ActiveView = built[0];
+
+            // The replaced views are no longer active anywhere; remove them now.
+            if (replacedIds.Count > 0)
+            {
+                try
+                {
+                    using (var tx = new Transaction(doc, "Delete replaced views"))
+                    {
+                        tx.Start();
+                        foreach (var id in replacedIds)
+                            if (doc.GetElement(id) != null) doc.Delete(id);
+                        tx.Commit();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("Old views could not all be deleted: " + ex.Message
+                                 + "  (they keep a '(replacing ...)' suffix)");
+                }
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendFormat("Imported {0} of {1} worksheet{2}.",
+                built.Count, plan.Count, plan.Count == 1 ? "" : "s");
+            if (failures.Count > 0)
+            {
+                sb.AppendLine().AppendLine();
+                sb.AppendLine("Not imported:");
+                foreach (var f in failures) sb.Append("  -  ").AppendLine(f);
+            }
+
+            // Only interrupt with a dialog when something needs attention; a clean
+            // batch just leaves the user on the first new view.
+            if (failures.Count > 0)
+                TaskDialog.Show("Excel Schedule Importer", sb.ToString());
+
+            return Result.Succeeded;
         }
 
         private static Result CancelUnlessChangesCommitted(bool hasCommittedUpdates)

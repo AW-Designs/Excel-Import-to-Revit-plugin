@@ -76,6 +76,23 @@ range, options) via extensible storage — the link is saved in the model.
 - imports that used the auto-detected range are **re-detected** on update, so
   rows added in Excel are included automatically
 
+## Importing several worksheets at once
+
+Next to the worksheet dropdown, **Sheets** opens a checklist of every worksheet
+in the workbook (with *All* / *None*). Check two or more and the Import button
+becomes **Import N**:
+
+- each worksheet becomes its own drafting view, named `XLS Import - <sheet>`
+- the cell range is auto-detected per sheet, so each view tracks its own source
+- empty worksheets are reported and skipped
+- name clashes are resolved once for the whole batch (replace all, or skip them)
+- everything is created in a **single transaction**, which is noticeably faster
+  than importing the same sheets one at a time
+
+All the other settings (scale, text size, fills, gridlines, font) apply to every
+sheet in the batch. To fine-tune one sheet's range or view name, import it on
+its own instead.
+
 ## Using it
 
 `Add-Ins tab → Excel Import panel → Import Excel Schedule`

@@ -64,6 +64,21 @@ an unsigned add-in — click **Always Load** once.
 `%AppData%\Autodesk\Revit\Addins\{2024,2025,2026}` for testing. This is separate
 from the release pipeline.
 
+## One-time re-install required for v1.0.0 – v1.0.4
+
+Those builds shipped an updater that looked for a release asset named
+`...R2024.zip` while the assets are actually named `...R24.zip`. It found
+nothing, gave up silently, and **never updated**. The fix is in v1.0.5 — but a
+broken updater cannot deliver its own fix, so every machine still on v1.0.4 or
+earlier has to run the installer once more:
+
+Download and double-click
+[Install-ExcelScheduleImporter.bat](https://github.com/AW-Designs/Excel-Import-to-Revit-plugin/releases/latest/download/Install-ExcelScheduleImporter.bat)
+(Revit must be closed). From v1.0.5 onward updates apply automatically again.
+
+To confirm a machine is updating, check the log:
+`%LOCALAPPDATA%\ExcelScheduleImporter\<year>\update-log.txt`
+
 ## Notes
 
 - **Code signing:** release builds from CI are unsigned, so colleagues click

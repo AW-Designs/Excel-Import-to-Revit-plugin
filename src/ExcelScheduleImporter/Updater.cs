@@ -56,6 +56,8 @@ namespace ExcelScheduleImporter
 
         private static void Check(int revitYear, string liveDir)
         {
+            _logPath = Path.Combine(LocalRoot(revitYear), "update-log.txt");
+
             // Throttle: skip if we checked recently.
             string stamp = Path.Combine(LocalRoot(revitYear), "lastcheck.txt");
             if (File.Exists(stamp) &&
@@ -67,15 +69,29 @@ namespace ExcelScheduleImporter
             try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; } catch { }
 
             string json = HttpGetString(LatestApi);
-            if (string.IsNullOrEmpty(json)) return;
+            if (string.IsNullOrEmpty(json)) { Log("empty response from GitHub API"); return; }
 
             Version latest = ParseVersion(Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\""));
             Version current = Assembly.GetExecutingAssembly().GetName().Version;
-            if (latest == null || latest <= current) return;
+            if (latest == null) { Log("could not parse tag_name"); return; }
+            if (latest <= current)
+            {
+                Log("up to date (running " + current + ", latest " + latest + ")");
+                return;
+            }
+            Log("update available: " + current + " -> " + latest);
 
             // Pick the asset whose name contains this Revit year, e.g. "...-R26.zip".
-            string assetUrl = FindAssetUrl(json, "R" + revitYear);
-            if (assetUrl == null) return;
+            // NOTE: assets use the TWO-DIGIT year ("-R26.zip"), matching install.ps1
+            // and release.yml. Searching for the four-digit "R2026" matches nothing
+            // and silently disables updating - that bug shipped in v1.0.0-v1.0.4.
+            string marker = "R" + revitYear.ToString().Substring(2) + ".zip";
+            string assetUrl = FindAssetUrl(json, marker);
+            if (assetUrl == null)
+            {
+                Log("no asset matching '" + marker + "' in release " + latest);
+                return;
+            }
 
             // Download + extract to a clean staging payload folder.
             string staging = Path.Combine(LocalRoot(revitYear), "staging");
@@ -83,7 +99,7 @@ namespace ExcelScheduleImporter
             Directory.CreateDirectory(staging);
 
             string zipPath = Path.Combine(staging, "payload.zip");
-            if (!DownloadFile(assetUrl, zipPath)) return;
+            if (!DownloadFile(assetUrl, zipPath)) { Log("download failed: " + assetUrl); return; }
 
             string payload = Path.Combine(staging, "payload");
             Directory.CreateDirectory(payload);
@@ -94,7 +110,26 @@ namespace ExcelScheduleImporter
             // copies payload -> liveDir. Independent of OnShutdown, so it still
             // applies even if Revit is force-closed.
             ArmSwapper(payload, liveDir, revitYear, latest.ToString());
+            Log("staged " + latest + "; will apply when Revit closes");
         }
+
+        /// <summary>
+        /// Append a line to the per-year update log. Update failures are silent by
+        /// design (they must never disturb Revit), so this file is the only way to
+        /// find out why a machine is not updating.
+        /// </summary>
+        private static void Log(string msg)
+        {
+            try
+            {
+                if (_logPath == null) return;
+                File.AppendAllText(_logPath,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + msg + Environment.NewLine);
+            }
+            catch { }
+        }
+
+        private static string _logPath;
 
         // ── HTTP ────────────────────────────────────────────────────────────
 

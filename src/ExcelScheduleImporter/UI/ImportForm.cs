@@ -27,6 +27,7 @@ namespace ExcelScheduleImporter.UI
         private TextBox _txtFile;
         private Button _btnBrowse;
         private DarkComboBox _cboSheet;
+        private Button _btnPickSheets;
         private TextBox _txtRange;
         private Label _lblDetected;
         private TextBox _txtViewName;
@@ -55,10 +56,26 @@ namespace ExcelScheduleImporter.UI
         private readonly HashSet<string> _existingViewNames;
         private string _detectedRange;   // last auto-detected range for the selected sheet
 
+        /// <summary>
+        /// Worksheets chosen via "Sheets..." for a batch import. Empty = ordinary
+        /// single-sheet import driven by the combo box.
+        /// </summary>
+        private List<string> _batchSheets = new List<string>();
+
+        /// <summary>Guards against the combo's change event clearing a batch selection.</summary>
+        private bool _suppressSheetChanged;
+
         private readonly Func<List<ElementId>, ScheduleUpdateResult> _updateAction;
         private readonly Func<List<ManageRow>> _refreshRows;
 
         public ImportOptions Options { get; private set; }
+
+        /// <summary>
+        /// One entry per worksheet when the user chose several via "Sheets...".
+        /// Null for an ordinary single-sheet import (use <see cref="Options"/>).
+        /// Ranges are auto-detected and view names auto-generated per sheet.
+        /// </summary>
+        public List<ImportOptions> BatchOptions { get; private set; }
 
         /// <summary>
         /// True once at least one linked drafting view has been successfully
@@ -156,9 +173,19 @@ namespace ExcelScheduleImporter.UI
             y += 34;
 
             pnlImport.Controls.Add(MakeLabel("Worksheet:", px, y));
-            _cboSheet = new DarkComboBox { Left = pc, Top = y - 3, Width = pw, Height = 24, Enabled = false };
+            _cboSheet = new DarkComboBox { Left = pc, Top = y - 3, Width = pw - 66, Height = 24, Enabled = false };
             _cboSheet.SelectedIndexChanged += OnSheetChanged;
+            _btnPickSheets = new Button
+            {
+                Left = pc + pw - 58, Top = y - 5, Width = 58, Height = 26,
+                Text = "Sheets", Enabled = false,
+            };
+            _btnPickSheets.Click += OnPickSheets;
+            _tip.SetToolTip(_btnPickSheets,
+                "Import several worksheets at once. Each becomes its own drafting view, "
+                + "with the range auto-detected and the view named after the sheet.");
             pnlImport.Controls.Add(_cboSheet);
+            pnlImport.Controls.Add(_btnPickSheets);
             y += 34;
 
             pnlImport.Controls.Add(MakeLabel("Cell range:", px, y));
@@ -683,9 +710,11 @@ namespace ExcelScheduleImporter.UI
                     Reader = new ExcelReader(dlg.FileName);   // parse once, reuse everywhere
                     var sheets = Reader.GetSheetNames();
                     _txtFile.Text = dlg.FileName;
+                    ClearBatch();                     // a new workbook invalidates any batch
                     _cboSheet.Items.Clear();
                     foreach (var s in sheets) _cboSheet.Items.Add(s);
                     _cboSheet.Enabled = sheets.Count > 0;
+                    _btnPickSheets.Enabled = sheets.Count > 1;
                     if (sheets.Count > 0) _cboSheet.SelectedIndex = 0;
                     _lblStatus.Text = "";
                 }
@@ -697,9 +726,87 @@ namespace ExcelScheduleImporter.UI
             }
         }
 
+        /// <summary>
+        /// Choose several worksheets to import in one go. Picking a single sheet
+        /// simply selects it in the combo (ordinary single import); picking two or
+        /// more switches the dialog into batch mode.
+        /// </summary>
+        private void OnPickSheets(object sender, EventArgs e)
+        {
+            if (Reader == null) return;
+
+            var all = _cboSheet.Items.Cast<object>().Select(o => o.ToString()).ToList();
+            var preselected = _batchSheets.Count > 0
+                ? _batchSheets
+                : (_cboSheet.SelectedItem != null
+                    ? new List<string> { _cboSheet.SelectedItem.ToString() }
+                    : new List<string>());
+
+            using (var picker = new SheetPickerForm(all, preselected))
+            {
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                var chosen = picker.SelectedSheets;
+                if (chosen.Count == 0) return;
+
+                if (chosen.Count == 1)
+                {
+                    // Not really a batch - fall back to the normal single-sheet flow
+                    // so the user keeps range and view-name editing.
+                    ClearBatch();
+                    bool alreadySelected = _cboSheet.SelectedItem != null
+                        && string.Equals(_cboSheet.SelectedItem.ToString(), chosen[0], StringComparison.Ordinal);
+
+                    if (alreadySelected)
+                        OnSheetChanged(null, EventArgs.Empty);   // no event fires; refresh by hand
+                    else
+                        _cboSheet.SelectedItem = chosen[0];
+                    return;
+                }
+                EnterBatchMode(chosen);
+            }
+        }
+
+        /// <summary>
+        /// Batch mode: per-sheet range and view name are derived automatically, so
+        /// those two inputs are disabled and clearly labelled as such. Every other
+        /// setting (scale, text size, fills, gridlines, font) still applies to all.
+        /// </summary>
+        private void EnterBatchMode(List<string> sheets)
+        {
+            _batchSheets = sheets;
+
+            _suppressSheetChanged = true;
+            try { _cboSheet.SelectedItem = sheets[0]; }
+            finally { _suppressSheetChanged = false; }
+
+            _txtRange.Enabled = false;
+            _txtRange.Text = "";
+            _lblDetected.Text = "auto-detected per sheet";
+            _txtViewName.Enabled = false;
+            _txtViewName.Text = "(named after each worksheet)";
+
+            _btnOk.Enabled = true;
+            _btnOk.Text = "Import " + sheets.Count;
+            _lblStatus.ForeColor = Theme.Accent;
+            _lblStatus.Text = sheets.Count + " worksheets selected - each becomes its own view.";
+        }
+
+        /// <summary>Leave batch mode and restore ordinary single-sheet editing.</summary>
+        private void ClearBatch()
+        {
+            if (_batchSheets.Count == 0) return;
+            _batchSheets = new List<string>();
+            _txtViewName.Enabled = true;
+            _btnOk.Text = "Import";
+            _lblStatus.ForeColor = Color.Firebrick;
+            _lblStatus.Text = "";
+        }
+
         private void OnSheetChanged(object sender, EventArgs e)
         {
+            if (_suppressSheetChanged) return;
             if (_cboSheet.SelectedItem == null) return;
+            ClearBatch();   // an explicit combo pick means "just this one sheet"
             string sheet = _cboSheet.SelectedItem.ToString();
 
             try
@@ -737,11 +844,14 @@ namespace ExcelScheduleImporter.UI
         private void OnOk(object sender, EventArgs e)
         {
             if (string.IsNullOrWhiteSpace(_txtFile.Text) || !File.Exists(_txtFile.Text))
-            { _lblStatus.Text = "Select an Excel file first."; return; }
+            { _lblStatus.ForeColor = Color.Firebrick; _lblStatus.Text = "Select an Excel file first."; return; }
             if (_cboSheet.SelectedItem == null)
-            { _lblStatus.Text = "Select a worksheet."; return; }
+            { _lblStatus.ForeColor = Color.Firebrick; _lblStatus.Text = "Select a worksheet."; return; }
+
+            if (_batchSheets.Count > 0) { OnOkBatch(); return; }
+
             if (string.IsNullOrWhiteSpace(_txtRange.Text))
-            { _lblStatus.Text = "Enter a cell range (e.g. A1:F42)."; return; }
+            { _lblStatus.ForeColor = Color.Firebrick; _lblStatus.Text = "Enter a cell range (e.g. A1:F42)."; return; }
 
             string sheetName = _cboSheet.SelectedItem.ToString();
             string viewName = DraftingViewBuilder.SanitizeViewName(
@@ -792,6 +902,194 @@ namespace ExcelScheduleImporter.UI
             };
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        /// <summary>
+        /// Build one ImportOptions per selected worksheet. Ranges are auto-detected
+        /// here (cheap - the workbook is already parsed) so empty sheets can be
+        /// dropped before the user waits on a long import. Name collisions are
+        /// resolved once for the whole batch rather than sheet by sheet.
+        /// </summary>
+        private void OnOkBatch()
+        {
+            var plan = new List<ImportOptions>();
+            var skippedEmpty = new List<string>();
+            var collisions = new List<string>();
+            // Two worksheets can sanitise to the same view name (they may differ
+            // only by characters Revit forbids). Revit would reject the second,
+            // so make names unique within the batch up front.
+            var namesInBatch = new HashSet<string>(StringComparer.Ordinal);
+
+            try
+            {
+                Cursor = Cursors.WaitCursor;
+
+                foreach (var sheet in _batchSheets)
+                {
+                    string range;
+                    try { range = Reader.DetectUsedRange(sheet); }
+                    catch { range = null; }
+
+                    if (string.IsNullOrWhiteSpace(range)) { skippedEmpty.Add(sheet); continue; }
+
+                    int bang = range.IndexOf('!');
+                    if (bang >= 0) range = range.Substring(bang + 1);
+
+                    string viewName = DraftingViewBuilder.SanitizeViewName("XLS Import - " + sheet);
+                    if (!namesInBatch.Add(viewName))
+                    {
+                        string unique;
+                        int n = 2;
+                        do { unique = viewName + " (" + n++ + ")"; }
+                        while (!namesInBatch.Add(unique));
+                        viewName = unique;
+                    }
+                    if (_existingViewNames.Contains(viewName)) collisions.Add(viewName);
+
+                    plan.Add(new ImportOptions
+                    {
+                        FilePath = _txtFile.Text,
+                        SheetName = sheet,
+                        RangeOverride = range,
+                        AutoRange = true,          // batch always uses detection
+                        ViewName = viewName,
+                        Scale = (int)_numScale.Value,
+                        TextFactor = (double)_numTextSize.Value / 100.0,
+                        NormalizeBodyText = _chkNormalize.Checked,
+                        BodyTextMm = (double)_numBodyMm.Value,
+                        FontOverride = _chkFont.Checked && !string.IsNullOrWhiteSpace(_txtFont.Text)
+                            ? _txtFont.Text.Trim() : null,
+                        IncludeFills = _chkFills.Checked,
+                        DrawAllGridlines = _chkGridlines.Checked,
+                    });
+                }
+            }
+            finally { Cursor = Cursors.Default; }
+
+            if (plan.Count == 0)
+            {
+                _lblStatus.ForeColor = Color.Firebrick;
+                _lblStatus.Text = "All selected worksheets are empty - nothing to import.";
+                return;
+            }
+
+            // One decision for every colliding name in the batch.
+            bool replace = false;
+            if (collisions.Count > 0)
+            {
+                string list = string.Join("\n   - ", collisions.Take(10));
+                if (collisions.Count > 10) list += "\n   - ... and " + (collisions.Count - 10) + " more";
+
+                var choice = MessageBox.Show(this,
+                    collisions.Count + " of the " + plan.Count + " views already exist:\n\n   - " + list +
+                    "\n\nOK      - replace them (existing views are deleted; any that are " +
+                    "placed on a sheet will be removed from that sheet)\n" +
+                    "Cancel - skip those and import only the new ones",
+                    "Some views already exist",
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button1);
+
+                replace = choice == DialogResult.OK;
+                if (replace)
+                {
+                    foreach (var o in plan)
+                        if (_existingViewNames.Contains(o.ViewName)) o.ReplaceExisting = true;
+                }
+                else
+                {
+                    plan = plan.Where(o => !_existingViewNames.Contains(o.ViewName)).ToList();
+                    if (plan.Count == 0)
+                    {
+                        _lblStatus.ForeColor = Color.Firebrick;
+                        _lblStatus.Text = "Every selected worksheet already has a view - nothing to import.";
+                        return;
+                    }
+                }
+            }
+
+            if (skippedEmpty.Count > 0)
+            {
+                MessageBox.Show(this,
+                    "These worksheets are empty and will be skipped:\n\n   - "
+                    + string.Join("\n   - ", skippedEmpty)
+                    + "\n\n" + plan.Count + " view(s) will be imported.",
+                    "Empty worksheets skipped",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+
+            BatchOptions = plan;
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        /// <summary>
+        /// Checklist of the workbook's worksheets, with select-all/none. Kept
+        /// deliberately plain: it inherits the dialog theme via Theme.Apply.
+        /// </summary>
+        private sealed class SheetPickerForm : Form
+        {
+            private readonly CheckedListBox _list;
+
+            public List<string> SelectedSheets =>
+                _list.CheckedItems.Cast<object>().Select(o => o.ToString()).ToList();
+
+            public SheetPickerForm(List<string> sheets, List<string> preselected)
+            {
+                Text = "Select worksheets";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MinimizeBox = MaximizeBox = false;
+                StartPosition = FormStartPosition.CenterParent;
+                ClientSize = new Size(360, 420);
+                Font = new Font("Segoe UI", 9f);
+
+                Controls.Add(new Label
+                {
+                    Left = 14, Top = 12, Width = 332, Height = 32,
+                    Text = "Each checked worksheet becomes its own drafting view.",
+                });
+
+                _list = new CheckedListBox
+                {
+                    Left = 14, Top = 48, Width = 332, Height = 296,
+                    CheckOnClick = true,
+                    IntegralHeight = false,
+                    BorderStyle = BorderStyle.FixedSingle,
+                };
+                foreach (var s in sheets)
+                    _list.Items.Add(s, preselected.Contains(s));
+                Controls.Add(_list);
+
+                var btnAll = new Button { Left = 14, Top = 352, Width = 84, Height = 28, Text = "All" };
+                var btnNone = new Button { Left = 104, Top = 352, Width = 84, Height = 28, Text = "None" };
+                btnAll.Click += (s, e) => SetAll(true);
+                btnNone.Click += (s, e) => SetAll(false);
+
+                var ok = new Button
+                {
+                    Left = 176, Top = 384, Width = 84, Height = 28,
+                    Text = "OK", DialogResult = DialogResult.OK, Tag = "primary",
+                };
+                var cancel = new Button
+                {
+                    Left = 266, Top = 384, Width = 80, Height = 28,
+                    Text = "Cancel", DialogResult = DialogResult.Cancel,
+                };
+                Controls.Add(btnAll); Controls.Add(btnNone);
+                Controls.Add(ok); Controls.Add(cancel);
+                AcceptButton = ok;
+                CancelButton = cancel;
+
+                Theme.Apply(this);
+                // CheckedListBox ignores the ambient theme colors, so set them directly.
+                _list.BackColor = Theme.InputBg;
+                _list.ForeColor = Theme.Fg;
+            }
+
+            private void SetAll(bool value)
+            {
+                for (int i = 0; i < _list.Items.Count; i++)
+                    _list.SetItemChecked(i, value);
+            }
         }
 
         /// <summary>Title-bar icon from the embedded ribbon PNG.</summary>

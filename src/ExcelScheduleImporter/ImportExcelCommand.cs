@@ -55,7 +55,7 @@ namespace ExcelScheduleImporter
                 using (var form = new ImportForm(
                     existingNames,
                     scheduleRows,
-                    ids => ScheduleUpdater.UpdateViews(doc, ids),
+                    (ids, progress) => ScheduleUpdater.UpdateViews(doc, ids, progress),
                     () => ScheduleUpdater.GatherRows(doc)))
                 {
                     DialogResult dialogResult = form.ShowDialog();

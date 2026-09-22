@@ -93,10 +93,16 @@ namespace ExcelScheduleImporter.Revit
         /// are untouched. Returns a one-line summary; failure details on
         /// subsequent lines.
         /// </summary>
-        public static ScheduleUpdateResult UpdateViews(Document doc, ICollection<ElementId> ids)
+        public static ScheduleUpdateResult UpdateViews(Document doc, ICollection<ElementId> ids,
+                                                      Action<int, int, string> progress = null)
         {
             int updated = 0;
             var failures = new List<string>();
+
+            // Several schedules usually come from ONE workbook (one per sheet).
+            // Parse each file once for the whole update instead of once per view -
+            // on a network drive that is the slowest part of reading.
+            var readers = new Dictionary<string, ExcelReader>(StringComparer.OrdinalIgnoreCase);
 
             using (var tx = new Transaction(doc, "Update Excel Schedules"))
             {
@@ -104,10 +110,13 @@ namespace ExcelScheduleImporter.Revit
               {
                 tx.Start();
 
+                int index = 0;
                 foreach (var id in ids)
                 {
+                    index++;
                     var view = doc.GetElement(id) as View;
                     if (view == null) continue;
+                    progress?.Invoke(index, ids.Count, view.Name);
 
                     try
                     {
@@ -116,12 +125,10 @@ namespace ExcelScheduleImporter.Revit
 
                         // Re-read the source (auto ranges are re-detected, so
                         // rows/columns added in Excel come along)
-                        TableModel table;
-                        using (var reader = new ExcelReader(link.FilePath))
-                        {
-                            table = reader.ReadSheet(link.SheetName,
-                                link.AutoRange ? null : link.RangeAddress);
-                        }
+                        if (!readers.TryGetValue(link.FilePath, out var reader))
+                            readers[link.FilePath] = reader = new ExcelReader(link.FilePath);
+                        TableModel table = reader.ReadSheet(link.SheetName,
+                            link.AutoRange ? null : link.RangeAddress);
 
                         // Wipe the view's own contents (lines, text, fills).
                         // The viewport that places it on a sheet is owned by
@@ -160,6 +167,10 @@ namespace ExcelScheduleImporter.Revit
                     Summary = "Update failed and was rolled back: " + ex.Message,
                 };
               }
+              finally
+              {
+                foreach (var r in readers.Values) r.Dispose();
+              }
             }
 
             var sb = new StringBuilder();
@@ -178,33 +189,54 @@ namespace ExcelScheduleImporter.Revit
         }
 
         /// <summary>
-        /// Delete every element a drafting view owns, safely. Deleting a
-        /// FilledRegion cascade-deletes its boundary curves - which are ALSO in
-        /// the owned set - so a single batch doc.Delete(list) can hit a
-        /// already-deleted id and throw InvalidObjectException at commit time.
-        /// Deleting one at a time with an existence check avoids that entirely.
+        /// Delete the importer-created contents of a drafting view in as FEW
+        /// Revit delete calls as possible.
+        ///
+        /// Every doc.Delete call triggers a model-wide regeneration/auto-join pass
+        /// (~0.2 s each on a real project, per the Revit journal). The previous
+        /// one-element-at-a-time loop therefore cost ~0.2 s PER LINE/TEXT, which
+        /// made a multi-view update run for many minutes and look frozen.
+        ///
+        /// Two batches instead:
+        ///   1. text notes + filled regions (a filled region takes its own
+        ///      boundary sketch lines with it)
+        ///   2. whatever detail lines still exist, re-collected AFTER batch 1 so
+        ///      no id deleted by the cascade is ever passed in (that double-delete
+        ///      is what originally caused InvalidObjectException).
+        /// If a batch still fails, fall back to the slow-but-safe per-element loop.
         /// </summary>
         private static void DeleteViewContents(Document doc, View view)
         {
-            // Restrict to EXACTLY the element kinds the importer creates:
-            // detail lines (CurveElement), text notes and filled regions.
-            // Crucially this never includes a View - the collector-by-view can
-            // surface view-owned elements, and attempting to delete one that
-            // Revit treats as a view triggers "Deleting all open views in a
-            // project is not allowed" when the view being updated is active.
-            var ids = new FilteredElementCollector(doc, view.Id)
+            // Restrict to EXACTLY the element kinds the importer creates. Never a
+            // View: deleting one that Revit treats as a view triggers "Deleting all
+            // open views in a project is not allowed" when the view is active.
+            DeleteBatch(doc, CollectOwned(doc, view, e => e is TextNote || e is FilledRegion));
+            DeleteBatch(doc, CollectOwned(doc, view, e => e is CurveElement));
+        }
+
+        private static List<ElementId> CollectOwned(Document doc, View view, Func<Element, bool> kind)
+            => new FilteredElementCollector(doc, view.Id)
                 .WhereElementIsNotElementType()
-                .Where(e => e.OwnerViewId == view.Id
-                            && !(e is View)
-                            && (e is TextNote || e is FilledRegion || e is CurveElement))
+                .Where(e => e.OwnerViewId == view.Id && !(e is View) && kind(e))
                 .Select(e => e.Id)
                 .ToList();
 
-            foreach (var id in ids)
+        private static void DeleteBatch(Document doc, List<ElementId> ids)
+        {
+            if (ids.Count == 0) return;
+            try
             {
-                if (doc.GetElement(id) == null) continue;   // already gone via a cascade
-                try { doc.Delete(id); }
-                catch (Autodesk.Revit.Exceptions.ApplicationException) { /* cascade / protected */ }
+                doc.Delete(ids);
+            }
+            catch (Autodesk.Revit.Exceptions.ApplicationException)
+            {
+                // Rare: something in the batch is protected or already gone.
+                foreach (var id in ids)
+                {
+                    if (doc.GetElement(id) == null) continue;
+                    try { doc.Delete(id); }
+                    catch (Autodesk.Revit.Exceptions.ApplicationException) { /* protected */ }
+                }
             }
         }
 

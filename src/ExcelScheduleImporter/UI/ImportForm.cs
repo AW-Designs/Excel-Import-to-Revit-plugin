@@ -65,7 +65,7 @@ namespace ExcelScheduleImporter.UI
         /// <summary>Guards against the combo's change event clearing a batch selection.</summary>
         private bool _suppressSheetChanged;
 
-        private readonly Func<List<ElementId>, ScheduleUpdateResult> _updateAction;
+        private readonly Func<List<ElementId>, Action<int, int, string>, ScheduleUpdateResult> _updateAction;
         private readonly Func<List<ManageRow>> _refreshRows;
 
         public ImportOptions Options { get; private set; }
@@ -93,7 +93,7 @@ namespace ExcelScheduleImporter.UI
 
         public ImportForm(IEnumerable<string> existingDraftingViewNames,
                           List<ManageRow> scheduleRows,
-                          Func<List<ElementId>, ScheduleUpdateResult> updateAction,
+                          Func<List<ElementId>, Action<int, int, string>, ScheduleUpdateResult> updateAction,
                           Func<List<ManageRow>> refreshRows)
         {
             _existingViewNames = new HashSet<string>(
@@ -486,7 +486,15 @@ namespace ExcelScheduleImporter.UI
                 Cursor = Cursors.WaitCursor;
                 _btnUpdateChecked.Enabled = _btnUpdateAll.Enabled = false;
 
-                ScheduleUpdateResult updateResult = _updateAction(ids);
+                // Live progress. Revit runs the update on this (UI) thread, so the
+                // label is repainted explicitly - otherwise nothing changes on screen
+                // until the whole update finishes and it looks frozen.
+                _lblUpdateStatus.ForeColor = Theme.Accent;
+                ScheduleUpdateResult updateResult = _updateAction(ids, (i, n, name) =>
+                {
+                    _lblUpdateStatus.Text = "Updating " + i + " of " + n + ":  " + name + "...";
+                    _lblUpdateStatus.Refresh();
+                });
                 if (updateResult == null)
                     throw new InvalidOperationException("The schedule updater returned no result.");
 

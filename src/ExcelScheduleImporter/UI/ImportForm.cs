@@ -67,6 +67,7 @@ namespace ExcelScheduleImporter.UI
 
         private readonly Func<List<ElementId>, Action<int, int, string>, ScheduleUpdateResult> _updateAction;
         private readonly Func<List<ManageRow>> _refreshRows;
+        private readonly Func<ElementId, string> _unlinkAction;   // null result = success
 
         public ImportOptions Options { get; private set; }
 
@@ -94,13 +95,15 @@ namespace ExcelScheduleImporter.UI
         public ImportForm(IEnumerable<string> existingDraftingViewNames,
                           List<ManageRow> scheduleRows,
                           Func<List<ElementId>, Action<int, int, string>, ScheduleUpdateResult> updateAction,
-                          Func<List<ManageRow>> refreshRows)
+                          Func<List<ManageRow>> refreshRows,
+                          Func<ElementId, string> unlinkAction = null)
         {
             _existingViewNames = new HashSet<string>(
                 existingDraftingViewNames ?? Enumerable.Empty<string>(),
                 StringComparer.Ordinal);
             _updateAction = updateAction;
             _refreshRows = refreshRows;
+            _unlinkAction = unlinkAction;
 
             BuildLayout();
             PopulateSchedules(scheduleRows ?? new List<ManageRow>());
@@ -306,7 +309,7 @@ namespace ExcelScheduleImporter.UI
             Controls.Add(new Label
             {
                 Left = rx, Top = 474, Width = rw, Height = 16, ForeColor = Color.DimGray,
-                Text = "Orange = out of date, pre-checked.  Updated views stay on their sheets.",
+                Text = "Orange = out of date, pre-checked.  Right-click a card to unlink it.",
                 AutoEllipsis = true,
             });
 
@@ -366,7 +369,8 @@ namespace ExcelScheduleImporter.UI
             int cardW = _flow.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
 
             foreach (var row in rows.OrderByDescending(r => r.OutOfDate).ThenBy(r => r.ViewName))
-                _flow.Controls.Add(new ScheduleCard(row, cardW, _tip));
+                _flow.Controls.Add(new ScheduleCard(row, cardW, _tip,
+                    _unlinkAction == null ? (Action<ManageRow>)null : OnUnlink));
 
             bool any = rows.Count > 0;
             if (!any) _flow.Controls.Add(BuildEmptyState(cardW));
@@ -463,6 +467,49 @@ namespace ExcelScheduleImporter.UI
                 card.CardChecked = isChecked;
         }
 
+        /// <summary>
+        /// Remove the Excel link from a view that is not really an import - most
+        /// often a colleague's DUPLICATE of an imported schedule that was reused
+        /// for something else. The view and its contents are left exactly as they
+        /// are; it simply stops being listed and can never be overwritten by Update.
+        /// </summary>
+        private void OnUnlink(ManageRow row)
+        {
+            var choice = MessageBox.Show(this,
+                "Remove the Excel link from \"" + row.ViewName + "\"?\n\n" +
+                "The view and everything drawn in it stay exactly as they are. It just " +
+                "stops being treated as an imported schedule, so Update can never " +
+                "overwrite it.\n\n" +
+                "Use this for views that were copied from an imported schedule and " +
+                "reused for something else.",
+                "Remove Excel link",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1);
+            if (choice != DialogResult.OK) return;
+
+            try
+            {
+                string error = _unlinkAction(row.ViewId);
+                if (error != null)
+                {
+                    MessageBox.Show(this, error, "Remove Excel link",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                // Committed model change: must survive the dialog closing with Cancel.
+                HasCommittedUpdates = true;
+                PopulateSchedules(_refreshRows());
+                _lblUpdateStatus.ForeColor = Theme.Success;
+                _lblUpdateStatus.Text = "Unlinked \"" + row.ViewName + "\".";
+            }
+            catch (Exception ex)
+            {
+                App.LogCrash("ImportForm.OnUnlink", ex);
+                MessageBox.Show(this, ex.Message + "\n\nFull details logged to:\n" + App.CrashLogPath,
+                    "Remove Excel link - Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void OnUpdate(bool onlyChecked)
         {
             var ids = _flow.Controls.OfType<ScheduleCard>()
@@ -557,7 +604,7 @@ namespace ExcelScheduleImporter.UI
                 set => _chk.Checked = value;
             }
 
-            public ScheduleCard(ManageRow row, int width, ToolTip tip)
+            public ScheduleCard(ManageRow row, int width, ToolTip tip, Action<ManageRow> onUnlink)
             {
                 Row = row;
                 Width = width;
@@ -606,10 +653,25 @@ namespace ExcelScheduleImporter.UI
 
                 Controls.AddRange(new Control[] { _chk, name, sheet, src });
 
+                if (onUnlink != null)
+                {
+                    var menu = new ContextMenuStrip
+                    {
+                        BackColor = Theme.InputBg, ForeColor = Theme.Fg,
+                        ShowImageMargin = false,
+                    };
+                    menu.Items.Add("Remove Excel link...", null, (s, e) => onUnlink(Row));
+                    ContextMenuStrip = menu;
+                    foreach (Control c in new Control[] { _chk, name, sheet, src })
+                        c.ContextMenuStrip = menu;
+                    Disposed += (s, e) => menu.Dispose();
+                }
+
                 string tipText = row.FilePath
                     + "\nWorksheet: " + row.Worksheet + "   Range: " + row.Range
                     + "\nImported: " + (row.ImportedUtc == DateTime.MinValue
-                        ? "-" : row.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
+                        ? "-" : row.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))
+                    + (onUnlink != null ? "\n\nRight-click to remove the Excel link." : "");
                 tip.SetToolTip(this, tipText);
                 tip.SetToolTip(name, tipText);
                 tip.SetToolTip(sheet, tipText);
@@ -657,9 +719,9 @@ namespace ExcelScheduleImporter.UI
                     WireHover(c);
                     c.Cursor = Cursors.Hand;
                     if (!(c is CheckBox))
-                        c.Click += (s, e) => _chk.Checked = !_chk.Checked;
+                        c.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) _chk.Checked = !_chk.Checked; };
                 }
-                Click += (s, e) => _chk.Checked = !_chk.Checked;
+                MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) _chk.Checked = !_chk.Checked; };
             }
 
             private static GraphicsPath RoundedRect(Rectangle r, int rad)

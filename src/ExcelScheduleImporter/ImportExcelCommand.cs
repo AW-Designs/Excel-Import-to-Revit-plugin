@@ -56,7 +56,8 @@ namespace ExcelScheduleImporter
                     existingNames,
                     scheduleRows,
                     (ids, progress) => ScheduleUpdater.UpdateViews(doc, ids, progress),
-                    () => ScheduleUpdater.GatherRows(doc)))
+                    () => ScheduleUpdater.GatherRows(doc),
+                    id => ScheduleUpdater.Unlink(doc, id)))
                 {
                     DialogResult dialogResult = form.ShowDialog();
                     hasCommittedUpdates = form.HasCommittedUpdates;

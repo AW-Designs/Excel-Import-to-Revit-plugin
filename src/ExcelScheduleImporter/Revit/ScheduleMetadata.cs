@@ -29,6 +29,14 @@ namespace ExcelScheduleImporter.Revit
         public double BodyTextMm = 2.0;
         public string FontOverride = "";
 
+        /// <summary>
+        /// UniqueId of the view this link was written to. Revit copies extensible
+        /// storage when a view is duplicated, but gives the duplicate a NEW
+        /// UniqueId - so a mismatch means "this is a copy, not the import".
+        /// Empty on links written before v1.0.8.
+        /// </summary>
+        public string ViewUniqueId = "";
+
         /// <summary>Rebuild the ImportOptions this view was originally created with.</summary>
         public ImportOptions ToOptions() => new ImportOptions
         {
@@ -79,7 +87,8 @@ namespace ExcelScheduleImporter.Revit
 
             string data = string.Join("\n", new[]
             {
-                "Version=1",
+                "Version=2",
+                "ViewUniqueId=" + view.UniqueId,
                 "FilePath=" + (o.FilePath ?? ""),
                 "SheetName=" + (o.SheetName ?? ""),
                 "RangeAddress=" + (o.RangeOverride ?? ""),
@@ -134,6 +143,7 @@ namespace ExcelScheduleImporter.Revit
                         case "NormalizeBodyText": link.NormalizeBodyText = v == "1"; break;
                         case "BodyTextMm":        double.TryParse(v, NumberStyles.Float, ci, out link.BodyTextMm); break;
                         case "FontOverride":      link.FontOverride = v; break;
+                        case "ViewUniqueId":      link.ViewUniqueId = v; break;
                     }
                 }
                 return string.IsNullOrEmpty(link.FilePath) ? null : link;
@@ -142,6 +152,22 @@ namespace ExcelScheduleImporter.Revit
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// True when the link was stamped on a DIFFERENT view, i.e. this view is a
+        /// Revit duplicate of an imported schedule. Only decidable for links
+        /// written by v1.0.8+; older links return false (see ScheduleUpdater).
+        /// </summary>
+        public static bool IsCopy(View view, ScheduleLink link)
+            => !string.IsNullOrEmpty(link.ViewUniqueId)
+               && !string.Equals(link.ViewUniqueId, view.UniqueId, StringComparison.Ordinal);
+
+        /// <summary>Remove the Excel link from a view. Must be called inside a transaction.</summary>
+        public static void Remove(View view)
+        {
+            var schema = Schema.Lookup(SchemaGuid);
+            if (schema != null) view.DeleteEntity(schema);
         }
 
         /// <summary>Is the source Excel file newer than what this view was built from?</summary>

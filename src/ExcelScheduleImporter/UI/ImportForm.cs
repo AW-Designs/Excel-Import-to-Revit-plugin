@@ -706,7 +706,13 @@ namespace ExcelScheduleImporter.UI
                 try
                 {
                     Cursor = Cursors.WaitCursor;
+                    _lblStatus.ForeColor = Color.Firebrick;
+                    _lblStatus.Text = "Reading workbook...";
+                    _lblStatus.Refresh();
+                    // Drop the previous workbook BEFORE opening the new one, so a
+                    // failed open never leaves a disposed reader behind.
                     Reader?.Dispose();
+                    Reader = null;
                     Reader = new ExcelReader(dlg.FileName);   // parse once, reuse everywhere
                     var sheets = Reader.GetSheetNames();
                     _txtFile.Text = dlg.FileName;
@@ -720,7 +726,22 @@ namespace ExcelScheduleImporter.UI
                 }
                 catch (Exception ex)
                 {
-                    _lblStatus.Text = "Cannot read file: " + ex.Message;
+                    // Reset the import side so nothing refers to the old workbook.
+                    _txtFile.Text = "";
+                    _cboSheet.Items.Clear();
+                    _cboSheet.Enabled = false;
+                    _btnPickSheets.Enabled = false;
+                    _btnOk.Enabled = false;
+                    ClearBatch();
+
+                    App.LogCrash("ImportForm.OnBrowse", ex);
+                    _lblStatus.ForeColor = Color.Firebrick;
+                    _lblStatus.Text = "Cannot read file - see details.";
+                    // The one-line label truncated the actual Windows error; show all of it.
+                    MessageBox.Show(this,
+                        ex.Message + "\n\nFull details logged to:\n" + App.CrashLogPath,
+                        "Cannot read Excel file",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
                 finally { Cursor = Cursors.Default; }
             }

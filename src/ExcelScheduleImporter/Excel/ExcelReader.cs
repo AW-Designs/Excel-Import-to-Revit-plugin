@@ -34,64 +34,119 @@ namespace ExcelScheduleImporter.Excel
 
         public void Dispose() => _wb.Dispose();
 
+        // Win32 error codes surfaced through IOException.HResult
+        private const int SharingViolation = unchecked((int)0x80070020);   // ERROR_SHARING_VIOLATION
+        private const int LockViolation    = unchecked((int)0x80070021);   // ERROR_LOCK_VIOLATION
+
         /// <summary>
-        /// Opens the workbook even when the file is currently open in Excel or
-        /// locked by another user on a network share.
+        /// Opens the workbook even when the file is open in Excel or sits on a
+        /// network share.
         ///
-        /// 1. Try a shared read stream (FileShare.ReadWrite | Delete) - reads a
-        ///    file that Excel has open.
-        /// 2. If that still fails (some SMB/exclusive locks), copy the bytes to a
-        ///    local temp file via a shared stream and open the copy.
+        /// Reading and parsing are deliberately separate steps so a failure says
+        /// which one went wrong - previously EVERY I/O error was reported as
+        /// "locked", which could be wrong and hid the real cause.
         ///
-        /// The returned workbook is fully in memory, so we never hold a handle on
-        /// the source file after this method returns.
+        /// 1. Copy the file's bytes into memory through a shared read stream
+        ///    (works while Excel has the file open). Sharing/lock violations are
+        ///    usually momentary - Excel mid-save, or a network lease being
+        ///    released - so those are retried with a short backoff.
+        /// 2. Parse from memory. We never hold a handle on the source afterwards.
         /// </summary>
         private static XLWorkbook OpenWorkbook(string path)
         {
             if (!File.Exists(path))
                 throw new FileNotFoundException("Excel file not found:\n" + path, path);
 
-            // Attempt 1: read directly through a shared stream.
-            try
-            {
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-                                               FileShare.ReadWrite | FileShare.Delete))
-                {
-                    return new XLWorkbook(fs);
-                }
-            }
-            catch (IOException)
-            {
-                // fall through to temp-copy strategy
-            }
+            var bytes = ReadAllBytesShared(path);
 
-            // Attempt 2: byte-copy to a local temp file, then open the copy.
-            string temp = Path.Combine(Path.GetTempPath(),
-                "ESI_" + Guid.NewGuid().ToString("N") + Path.GetExtension(path));
             try
             {
-                using (var src = new FileStream(path, FileMode.Open, FileAccess.Read,
-                                                FileShare.ReadWrite | FileShare.Delete))
-                using (var dst = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                {
-                    src.CopyTo(dst);
-                }
-                using (var fs = new FileStream(temp, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    return new XLWorkbook(fs);
-                }
+                return new XLWorkbook(new MemoryStream(bytes, writable: false));
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
-                throw new IOException(
-                    "Could not read the Excel file - it is locked by another program or user.\n\n" +
-                    "Close the file in Excel (or ask whoever has it open to close it) and try again.\n\n" +
+                // The file was read fine - its CONTENT could not be parsed.
+                throw new InvalidDataException(
+                    "The Excel file was read but could not be opened as a workbook.\n\n" +
+                    "It may be damaged, password-protected, or saved in an unsupported " +
+                    "format (only .xlsx / .xlsm are supported - not legacy .xls).\n\n" +
                     "File: " + path + "\nDetails: " + ex.Message, ex);
             }
-            finally
+        }
+
+        /// <summary>
+        /// Read the whole file with FileShare.ReadWrite|Delete, retrying briefly
+        /// on sharing/lock violations (~5 s total) before giving up.
+        /// </summary>
+        private static byte[] ReadAllBytesShared(string path)
+        {
+            int[] backoffMs = { 250, 500, 1000, 1500, 2000 };
+            for (int attempt = 0; ; attempt++)
             {
-                try { if (File.Exists(temp)) File.Delete(temp); } catch { /* best effort */ }
+                try
+                {
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                                   FileShare.ReadWrite | FileShare.Delete))
+                    using (var ms = new MemoryStream())
+                    {
+                        fs.CopyTo(ms);
+                        return ms.ToArray();
+                    }
+                }
+                catch (IOException ex) when (IsLockError(ex) && attempt < backoffMs.Length)
+                {
+                    System.Threading.Thread.Sleep(backoffMs[attempt]);
+                }
+                catch (IOException ex) when (IsLockError(ex))
+                {
+                    string who = TryGetExcelLockOwner(path);
+                    throw new IOException(
+                        "Could not read the Excel file - it is locked" +
+                        (who != null ? " by " + who : " by another program or user") + ".\n\n" +
+                        "Ask whoever has it open to close it (or wait for Excel to finish " +
+                        "saving) and try again.\n\n" +
+                        "File: " + path + "\nDetails: " + ex.Message, ex);
+                }
+                catch (IOException ex)
+                {
+                    // Not a lock - e.g. network drive dropped, path too long.
+                    throw new IOException(
+                        "Could not read the Excel file.\n\n" +
+                        "File: " + path + "\nDetails: " + ex.Message, ex);
+                }
             }
+        }
+
+        private static bool IsLockError(IOException ex)
+            => ex.HResult == SharingViolation || ex.HResult == LockViolation;
+
+        /// <summary>
+        /// Excel writes an owner file "~$&lt;name&gt;" beside a workbook it has open;
+        /// its first byte is the length of the user name that follows. Best effort -
+        /// returns null if there is no owner file or it cannot be read.
+        /// </summary>
+        private static string TryGetExcelLockOwner(string path)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(path);
+                string name = Path.GetFileName(path);
+                string ownerFile = Path.Combine(dir, "~$" + name);
+                if (!File.Exists(ownerFile)) return null;
+
+                byte[] data;
+                using (var fs = new FileStream(ownerFile, FileMode.Open, FileAccess.Read,
+                                               FileShare.ReadWrite | FileShare.Delete))
+                {
+                    data = new byte[Math.Min(fs.Length, 165)];
+                    fs.Read(data, 0, data.Length);
+                }
+                int len = data.Length > 0 ? data[0] : 0;
+                if (len <= 0 || len >= data.Length) return null;
+                string user = System.Text.Encoding.Default.GetString(data, 1, len).Trim();
+                return user.Length > 0 ? user : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>List worksheet names (visible sheets first).</summary>
